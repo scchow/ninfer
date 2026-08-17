@@ -550,6 +550,14 @@ int test_response_serialization() {
     failures += check(j.at("usage").at("prompt_tokens") == 10, "usage prompt_tokens");
     failures += check(j.at("usage").at("completion_tokens") == 3, "usage completion_tokens");
     failures += check(j.at("usage").at("total_tokens") == 13, "usage total_tokens");
+    failures += check(!j.contains("metrics"), "no metrics key when omitted");
+
+    // Optional metrics object (vLLM convention) is attached when provided.
+    const CompletionMetrics response_metrics{120.5, 8.25};
+    const Json jm = Json::parse(make_chat_completion_response("id-3", "m", 111, "hello",
+                                                              "", "stop", usage, response_metrics));
+    failures += check(jm.at("metrics").at("time_to_first_token_ms") == 120.5, "metrics ttft");
+    failures += check(jm.at("metrics").at("mean_itl_ms") == 8.25, "metrics itl");
 
     // Non-empty reasoning is attached as message.reasoning_content, content stays answer-only.
     const Json jr = Json::parse(make_chat_completion_response("id-2", "m", 111, "the answer",
@@ -585,11 +593,14 @@ int test_tool_response_serialization() {
                       "tool function arguments");
     failures += check(j.at("usage").at("total_tokens") == 18, "tool usage total");
 
+    const CompletionMetrics tool_metrics{150.0, 8.25};
     const Json with_content = Json::parse(make_chat_completion_tool_response(
-        "id-tool-2", "m", 223, "Calling weather.", "", calls, usage));
+        "id-tool-2", "m", 223, "Calling weather.", "", calls, usage, tool_metrics));
     failures +=
         check(with_content.at("choices").at(0).at("message").at("content") == "Calling weather.",
               "tool content prefix carried");
+    failures +=
+        check(with_content.at("metrics").at("mean_itl_ms") == 8.25, "tool response metrics itl");
     return failures;
 }
 
@@ -630,6 +641,16 @@ int test_chunk_serialization() {
 
     const Json final_no_usage = parse_sse(make_chat_chunk_final("id", "m", 1, "stop", false));
     failures += check(!final_no_usage.contains("usage"), "no usage key when include_usage=false");
+    failures += check(!final_chunk.contains("metrics"), "no metrics key on final chunk when omitted");
+
+    // Final chunk carries the optional metrics object when provided.
+    const CompletionMetrics chunk_metrics{100.0, 9.0};
+    const Json final_metrics =
+        parse_sse(make_chat_chunk_final("id", "m", 1, "stop", true, chunk_metrics));
+    failures += check(final_metrics.at("metrics").at("time_to_first_token_ms") == 100.0,
+                      "final chunk metrics ttft");
+    failures +=
+        check(final_metrics.at("metrics").at("mean_itl_ms") == 9.0, "final chunk metrics itl");
 
     // Dedicated usage chunk: empty choices, populated usage.
     const CompletionUsage usage{2, 5};

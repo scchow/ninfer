@@ -53,6 +53,14 @@ struct CompletionUsage {
     int completion_tokens = 0;
 };
 
+// Per-request generation timing in milliseconds, emitted as the OpenAI `metrics`
+// object (the vLLM convention) so routers such as llama-swap can derive prompt
+// and generation token rates. Omitted from the response when null.
+struct CompletionMetrics {
+    double time_to_first_token_ms = 0.0;
+    double mean_itl_ms            = 0.0;
+};
+
 enum class ContentKind {
     Text,
     Image,

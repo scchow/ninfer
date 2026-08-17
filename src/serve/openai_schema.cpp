@@ -41,6 +41,13 @@ const Json& require_object(const Json& body) {
     return body;
 }
 
+// vLLM-style `metrics` object consumed by routers (e.g. llama-swap) to derive
+// prompt and generation token rates.
+Json completion_metrics_json(const CompletionMetrics& metrics) {
+    return Json{{"time_to_first_token_ms", metrics.time_to_first_token_ms},
+                {"mean_itl_ms", metrics.mean_itl_ms}};
+}
+
 bool get_bool(const Json& obj, const char* key, bool fallback) {
     if (!obj.contains(key) || obj.at(key).is_null()) { return fallback; }
     if (!obj.at(key).is_boolean()) { bad_request(std::string(key) + " must be a boolean", key); }
@@ -575,10 +582,11 @@ GenerationRequest parse_chat_completion_request(const Json& body, const RequestL
 std::string make_chat_completion_response(const std::string& id, const std::string& model,
                                           std::int64_t created, const std::string& content,
                                           const std::string& reasoning, const char* finish_reason,
-                                          const CompletionUsage& usage) {
+                                          const CompletionUsage& usage,
+                                          std::optional<CompletionMetrics> metrics) {
     Json message = {{"role", "assistant"}, {"content", content}};
     if (!reasoning.empty()) { message["reasoning_content"] = reasoning; }
-    const Json payload = {
+    Json payload = {
         {"id", id},
         {"object", "chat.completion"},
         {"created", created},
@@ -589,6 +597,7 @@ std::string make_chat_completion_response(const std::string& id, const std::stri
         {"usage", Json{{"prompt_tokens", usage.prompt_tokens},
                        {"completion_tokens", usage.completion_tokens},
                        {"total_tokens", usage.prompt_tokens + usage.completion_tokens}}}};
+    if (metrics) { payload["metrics"] = completion_metrics_json(*metrics); }
     return payload.dump();
 }
 
@@ -596,12 +605,13 @@ std::string make_chat_completion_tool_response(const std::string& id, const std:
                                                std::int64_t created, const std::string& content,
                                                const std::string& reasoning,
                                                const std::vector<ToolCall>& tool_calls,
-                                               const CompletionUsage& usage) {
+                                               const CompletionUsage& usage,
+                                               std::optional<CompletionMetrics> metrics) {
     Json message = {{"role", "assistant"},
                     {"content", content.empty() ? Json(nullptr) : Json(content)},
                     {"tool_calls", tool_calls_json(tool_calls, false)}};
     if (!reasoning.empty()) { message["reasoning_content"] = reasoning; }
-    const Json payload = {
+    Json payload = {
         {"id", id},
         {"object", "chat.completion"},
         {"created", created},
@@ -612,6 +622,7 @@ std::string make_chat_completion_tool_response(const std::string& id, const std:
         {"usage", Json{{"prompt_tokens", usage.prompt_tokens},
                        {"completion_tokens", usage.completion_tokens},
                        {"total_tokens", usage.prompt_tokens + usage.completion_tokens}}}};
+    if (metrics) { payload["metrics"] = completion_metrics_json(*metrics); }
     return payload.dump();
 }
 
@@ -661,11 +672,13 @@ std::string make_chat_chunk_tool_calls(const std::string& id, const std::string&
 
 std::string make_chat_chunk_final(const std::string& id, const std::string& model,
                                   std::int64_t created, const char* finish_reason,
-                                  bool include_usage) {
+                                  bool include_usage,
+                                  std::optional<CompletionMetrics> metrics) {
     Json payload       = base_chunk(id, model, created);
     payload["choices"] = Json::array(
         {Json{{"index", 0}, {"delta", Json::object()}, {"finish_reason", finish_reason}}});
     if (include_usage) { payload["usage"] = nullptr; }
+    if (metrics) { payload["metrics"] = completion_metrics_json(*metrics); }
     return sse_event(payload);
 }
 
