@@ -48,6 +48,19 @@ Json completion_metrics_json(const CompletionMetrics& metrics) {
                 {"mean_itl_ms", metrics.mean_itl_ms}};
 }
 
+// OpenAI `usage` object. When `prompt_tokens_details.cached_tokens` (vLLM
+// convention) is present, routers divide only the uncached tail, not the
+// full prompt, by TTFT when computing prompt token rates.
+Json completion_usage_json(const CompletionUsage& usage) {
+    Json result = {{"prompt_tokens", usage.prompt_tokens},
+                  {"completion_tokens", usage.completion_tokens},
+                  {"total_tokens", usage.prompt_tokens + usage.completion_tokens}};
+    if (usage.cached_prompt_tokens > 0) {
+        result["prompt_tokens_details"] = Json{{"cached_tokens", usage.cached_prompt_tokens}};
+    }
+    return result;
+}
+
 bool get_bool(const Json& obj, const char* key, bool fallback) {
     if (!obj.contains(key) || obj.at(key).is_null()) { return fallback; }
     if (!obj.at(key).is_boolean()) { bad_request(std::string(key) + " must be a boolean", key); }
@@ -594,9 +607,7 @@ std::string make_chat_completion_response(const std::string& id, const std::stri
         {"choices",
          Json::array({Json{
              {"index", 0}, {"message", std::move(message)}, {"finish_reason", finish_reason}}})},
-        {"usage", Json{{"prompt_tokens", usage.prompt_tokens},
-                       {"completion_tokens", usage.completion_tokens},
-                       {"total_tokens", usage.prompt_tokens + usage.completion_tokens}}}};
+        {"usage", completion_usage_json(usage)}};
     if (metrics) { payload["metrics"] = completion_metrics_json(*metrics); }
     return payload.dump();
 }
@@ -619,9 +630,7 @@ std::string make_chat_completion_tool_response(const std::string& id, const std:
         {"choices",
          Json::array({Json{
              {"index", 0}, {"message", std::move(message)}, {"finish_reason", "tool_calls"}}})},
-        {"usage", Json{{"prompt_tokens", usage.prompt_tokens},
-                       {"completion_tokens", usage.completion_tokens},
-                       {"total_tokens", usage.prompt_tokens + usage.completion_tokens}}}};
+        {"usage", completion_usage_json(usage)}};
     if (metrics) { payload["metrics"] = completion_metrics_json(*metrics); }
     return payload.dump();
 }
@@ -686,9 +695,7 @@ std::string make_chat_chunk_usage(const std::string& id, const std::string& mode
                                   std::int64_t created, const CompletionUsage& usage) {
     Json payload       = base_chunk(id, model, created);
     payload["choices"] = Json::array();
-    payload["usage"]   = Json{{"prompt_tokens", usage.prompt_tokens},
-                              {"completion_tokens", usage.completion_tokens},
-                              {"total_tokens", usage.prompt_tokens + usage.completion_tokens}};
+    payload["usage"]   = completion_usage_json(usage);
     return sse_event(payload);
 }
 
