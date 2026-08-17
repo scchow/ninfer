@@ -551,6 +551,19 @@ int test_response_serialization() {
     failures += check(j.at("usage").at("completion_tokens") == 3, "usage completion_tokens");
     failures += check(j.at("usage").at("total_tokens") == 13, "usage total_tokens");
     failures += check(!j.contains("metrics"), "no metrics key when omitted");
+    failures += check(!j.at("usage").contains("prompt_tokens_details"),
+                      "no prompt_tokens_details when cache unused");
+
+    // Cached prompt tokens surface as usage.prompt_tokens_details.cached_tokens
+    // (vLLM convention) so routers rate only the uncached tail against TTFT.
+    const CompletionUsage cached_usage{usage.prompt_tokens, usage.completion_tokens, 4096};
+    const Json jc = Json::parse(make_chat_completion_response("id-4", "m", 112, "hello",
+                                                              "", "stop", cached_usage));
+    failures += check(
+        jc.at("usage").at("prompt_tokens_details").at("cached_tokens") == 4096,
+        "usage prompt_tokens_details.cached_tokens");
+    failures += check(jc.at("usage").at("prompt_tokens") == usage.prompt_tokens,
+                      "cached usage keeps full prompt_tokens");
 
     // Optional metrics object (vLLM convention) is attached when provided.
     const CompletionMetrics response_metrics{120.5, 8.25};
@@ -660,6 +673,14 @@ int test_chunk_serialization() {
     failures +=
         check(usage_chunk.at("usage").at("prompt_tokens") == 2, "usage chunk prompt_tokens");
     failures += check(usage_chunk.at("usage").at("total_tokens") == 7, "usage chunk total");
+    failures += check(!usage_chunk.at("usage").contains("prompt_tokens_details"),
+                      "usage chunk omits details when cache unused");
+    const CompletionUsage cached_chunk_usage{2, 5, 1};
+    const Json cached_usage_chunk =
+        parse_sse(make_chat_chunk_usage("id", "m", 1, cached_chunk_usage));
+    failures += check(
+        cached_usage_chunk.at("usage").at("prompt_tokens_details").at("cached_tokens") == 1,
+        "usage chunk prompt_tokens_details.cached_tokens");
 
     failures += check(sse_done() == "data: [DONE]\n\n", "done sentinel");
     return failures;

@@ -414,7 +414,9 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                 return req.is_connection_alive && !req.is_connection_alive();
             });
             log_request_done(log_context, outcome);
-            const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+            const CompletionUsage usage{outcome.prompt_tokens,
+                                        outcome.completion_tokens,
+                                        static_cast<int>(outcome.metrics.prefix_cache_hit_tokens)};
             const std::optional<CompletionMetrics> metrics = completion_metrics(outcome);
             std::string response_body;
             if (!outcome.tool_calls.empty()) {
@@ -502,7 +504,9 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                                               include_usage, completion_metrics(outcome)));
                 }
                 if (include_usage) {
-                    const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+                    const CompletionUsage usage{outcome.prompt_tokens,
+                                                outcome.completion_tokens,
+                                                static_cast<int>(outcome.metrics.prefix_cache_hit_tokens)};
                     write_stream_item(sink, *stream,
                                       make_chat_chunk_usage(id, model, created, usage));
                 }

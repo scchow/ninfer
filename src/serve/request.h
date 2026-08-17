@@ -49,8 +49,12 @@ struct RequestLimits {
 };
 
 struct CompletionUsage {
-    int prompt_tokens     = 0;
-    int completion_tokens = 0;
+    int prompt_tokens      = 0;
+    int completion_tokens  = 0;
+    // Prompt tokens reused from the prefix cache (not recomputed). Emitted as
+    // OpenAI `usage.prompt_tokens_details.cached_tokens` so routers divide
+    // only the uncached tail, not the full prompt, by TTFT.
+    int cached_prompt_tokens = 0;
 };
 
 // Per-request generation timing in milliseconds, emitted as the OpenAI `metrics`
