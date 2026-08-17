@@ -73,6 +73,22 @@ std::string sse_error_event(const ApiError& error) {
     return "data: " + make_error_body(error) + "\n\n";
 }
 
+// Derive the wire `metrics` object from engine timings, mirroring the request
+// log's rate conventions: prefill emits the first token, the remaining
+// (completion - 1) tokens come from decode. Omitted when no first token was
+// produced (nothing to time).
+std::optional<CompletionMetrics> completion_metrics(const GenerationOutcome& outcome) {
+    const GenerationMetrics& metrics = outcome.metrics;
+    if (metrics.ttft_seconds <= 0.0) { return std::nullopt; }
+    double mean_itl_ms = 0.0;
+    const double decode_tokens =
+        outcome.completion_tokens > 0 ? static_cast<double>(outcome.completion_tokens - 1) : 0.0;
+    if (decode_tokens > 0.0 && metrics.decode_seconds > 0.0) {
+        mean_itl_ms = metrics.decode_seconds / decode_tokens * 1000.0;
+    }
+    return CompletionMetrics{metrics.ttft_seconds * 1000.0, mean_itl_ms};
+}
+
 ThroughputReport make_throughput_report(const ninfer::RuntimeStats& previous,
                                         const ninfer::RuntimeStats& current,
                                         double interval_seconds) {
@@ -399,14 +415,16 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
             });
             log_request_done(log_context, outcome);
             const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};
+            const std::optional<CompletionMetrics> metrics = completion_metrics(outcome);
             std::string response_body;
             if (!outcome.tool_calls.empty()) {
                 response_body = make_chat_completion_tool_response(
-                    id, model, created, outcome.text, outcome.reasoning, outcome.tool_calls, usage);
+                    id, model, created, outcome.text, outcome.reasoning, outcome.tool_calls, usage,
+                    metrics);
             } else {
                 response_body = make_chat_completion_response(
                     id, model, created, outcome.text, outcome.reasoning,
-                    finish_reason_wire(outcome.finish_reason), usage);
+                    finish_reason_wire(outcome.finish_reason), usage, metrics);
             }
             set_owned_content(res, std::move(response_body), prepared.lifetime);
         } catch (const std::exception& e) {
@@ -468,7 +486,8 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                                           id, model, created, outcome.tool_calls, include_usage));
                     write_stream_item(
                         sink, *stream,
-                        make_chat_chunk_final(id, model, created, "tool_calls", include_usage));
+                        make_chat_chunk_final(id, model, created, "tool_calls", include_usage,
+                                              completion_metrics(outcome)));
                 } else {
                     if (tool_capable && !remaining.empty()) {
                         write_stream_item(sink, *stream,
@@ -480,7 +499,7 @@ void HttpServer::handle_chat_completions(const httplib::Request& req, httplib::R
                         sink, *stream,
                         make_chat_chunk_final(id, model, created,
                                               finish_reason_wire(outcome.finish_reason),
-                                              include_usage));
+                                              include_usage, completion_metrics(outcome)));
                 }
                 if (include_usage) {
                     const CompletionUsage usage{outcome.prompt_tokens, outcome.completion_tokens};

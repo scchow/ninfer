@@ -31,12 +31,14 @@ std::optional<bool> parse_openai_preserve_thinking(const nlohmann::json& body);
 std::string make_chat_completion_response(const std::string& id, const std::string& model,
                                           std::int64_t created, const std::string& content,
                                           const std::string& reasoning, const char* finish_reason,
-                                          const CompletionUsage& usage);
+                                          const CompletionUsage& usage,
+                                          std::optional<CompletionMetrics> metrics = {});
 std::string make_chat_completion_tool_response(const std::string& id, const std::string& model,
                                                std::int64_t created, const std::string& content,
                                                const std::string& reasoning,
                                                const std::vector<ToolCall>& tool_calls,
-                                               const CompletionUsage& usage);
+                                               const CompletionUsage& usage,
+                                               std::optional<CompletionMetrics> metrics = {});
 
 // Streaming SSE event strings ("data: {...}\n\n"). The first chunk carries the
 // assistant role; reasoning chunks carry `reasoning_content` deltas (the <think>
@@ -58,7 +60,8 @@ std::string make_chat_chunk_tool_calls(const std::string& id, const std::string&
                                        const std::vector<ToolCall>& tool_calls, bool include_usage);
 std::string make_chat_chunk_final(const std::string& id, const std::string& model,
                                   std::int64_t created, const char* finish_reason,
-                                  bool include_usage);
+                                  bool include_usage,
+                                  std::optional<CompletionMetrics> metrics = {});
 // Dedicated usage chunk: `choices: []` with the request's token usage. Emitted
 // only when stream_options.include_usage is true.
 std::string make_chat_chunk_usage(const std::string& id, const std::string& model,
