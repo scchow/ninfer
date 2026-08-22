@@ -132,27 +132,57 @@ ParsedToolCallOutput parse_qwen_tool_call_output(const std::string& text,
     const std::size_t first = text.find(kToolOpen);
     if (first == std::string::npos) { return fallback(text); }
 
+    // Graceful degradation: salvage every complete well-formed block instead of discarding the
+    // whole response when anything after a block is imperfect. Prose between or after blocks
+    // (a model "narrating" around its tool calls) and truncated final blocks (generation cut by
+    // max tokens mid-call) keep the already-parsed calls; the unparseable remainder is returned
+    // as content so nothing the model emitted is silently dropped. The all-or-nothing fallback
+    // now only triggers when no block parses at all.
     ParsedToolCallOutput out;
     out.content = rtrim_ascii(std::string_view(text).substr(0, first));
 
-    std::size_t pos = first;
+    std::size_t pos        = first;
+    bool salvaged_any      = false;
+    std::size_t scanned_to = 0;
     while (pos < text.size()) {
         skip_ws(text, pos);
-        if (pos >= text.size()) { break; }
-        if (!starts_with_at(text, pos, kToolOpen)) { return fallback(text); }
+        if (pos >= text.size()) {
+            scanned_to = pos;
+            break;
+        }
+        if (!starts_with_at(text, pos, kToolOpen)) {
+            // Prose between or after blocks: treat as trailing content, stop salvaging.
+            scanned_to = pos;
+            break;
+        }
         const std::size_t inner_begin = pos + kToolOpen.size();
         const std::size_t close       = text.find(kToolClose, inner_begin);
-        if (close == std::string::npos) { return fallback(text); }
+        if (close == std::string::npos) {
+            // Un-closed block (e.g. generation hit the token cap mid-call): stop here.
+            scanned_to = pos;
+            break;
+        }
         ToolCall call;
         if (!parse_one_tool_call(std::string_view(text).substr(inner_begin, close - inner_begin),
                                  max_tool_name_length, call)) {
-            return fallback(text);
+            // Malformed block body: keep what already parsed; remainder becomes content.
+            scanned_to = pos;
+            break;
         }
         out.tool_calls.push_back(std::move(call));
-        pos = close + kToolClose.size();
+        salvaged_any = true;
+        pos          = close + kToolClose.size();
+        scanned_to   = pos;
     }
 
-    if (out.tool_calls.empty()) { return fallback(text); }
+    if (!salvaged_any) { return fallback(text); }
+
+    const std::string trailing(trim_ascii(std::string_view(text).substr(scanned_to)));
+    if (!trailing.empty()) {
+        if (!out.content.empty()) { out.content += "\n\n"; }
+        out.content += trailing;
+    }
+
     out.is_tool_call_response = true;
     return out;
 }

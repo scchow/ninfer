@@ -58,6 +58,13 @@ artifact loads with either style.
 | **Raw decode TPS change** (median) | **−0.0%** |
 | MTP acceptance Δ (mean) | −0.0 pp |
 
+**Methodology note.** The A/B is matched-effort: each prompt runs stock-vs-sharp at the
+same `reasoning_effort`, same seed, alternating server order. The headline median (−42%,
+medium effort) reflects the template's terseness instruction plus Sharp's medium default;
+at explicitly requested xhigh on reasoning-heavy prompts the gap narrows but persists
+(−41.6% on the hard subset). Numbers are from non-tool single-turn requests; agentic
+tool-loop behavior depends on the client harness.
+
 Sharp produces equivalent-quality answers on objective checks (math reasoning, JSON structure, code
 correctness). The effect is prompt-driven (terse system instruction), not MTP-dependent — MTP0
 shows the same 31–64% token reduction with similar TPS.
