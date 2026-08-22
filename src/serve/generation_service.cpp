@@ -429,6 +429,19 @@ void GenerationService::warmup() {
         request.max_tokens_set   = true;
         PreparedRequest prepared = prepare(request);
         run(prepared, nullptr);
+    } catch (const ninfer::RequestError& exception) {
+        // Warmup is internal and must not inherit the client-facing request deadline
+        // (--pending-timeout-ms bounds incoming-request preparation and queue waiting).
+        // A tiny configured timeout can legitimately expire during warmup preparation
+        // on a healthy engine; that is not a server fault. Genuine warmup failures
+        // still propagate as fatal.
+        if (exception.kind() == ninfer::RequestErrorKind::QueueTimeout) {
+            write_console_log(ConsoleLogLevel::Warning,
+                              "warmup exceeded --pending-timeout-ms (non-fatal for warmup); "
+                              "server ready");
+            return;
+        }
+        throw std::runtime_error(std::string("warmup generation failed: ") + exception.what());
     } catch (const std::exception& exception) {
         throw std::runtime_error(std::string("warmup generation failed: ") + exception.what());
     }
