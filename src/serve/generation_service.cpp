@@ -6,11 +6,13 @@
 #include "serve/translate.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstddef>
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace ninfer::serve {
@@ -187,6 +189,14 @@ void check_preparation_control(Clock::time_point deadline,
     }
 }
 
+// True when the string is empty or whitespace-only (ASCII).
+bool is_ascii_blank(std::string_view text) {
+    for (const unsigned char c : text) {
+        if (std::isspace(c) == 0) { return false; }
+    }
+    return true;
+}
+
 class ServiceOutputSink final : public ninfer::OutputSink {
 public:
     ServiceOutputSink(const StreamSink& sink, bool filter_tool_calls)
@@ -195,7 +205,13 @@ public:
     void publish(ninfer::OutputDelta delta) override {
         if (delta.text.empty()) { return; }
         if (delta.channel == ninfer::OutputChannel::Reasoning) {
-            if (sink_->on_reasoning) { sink_->on_reasoning(delta.text); }
+            if (!sink_->on_reasoning) { return; }
+            // With tools enabled, hold back a trailing reasoning region that could be a
+            // tool call: when the model skips think-close it emits the call in this channel,
+            // and streaming it verbatim would bake raw tool XML into client history.
+            std::string visible =
+                filter_tool_calls_ ? reasoning_filter_.feed(delta.text) : std::move(delta.text);
+            publish_reasoning(visible);
         } else {
             std::string visible =
                 filter_tool_calls_ ? tool_filter_.feed(delta.text) : std::move(delta.text);
@@ -203,8 +219,14 @@ public:
         }
     }
 
-    std::size_t finish(bool is_tool_call_response) {
-        if (filter_tool_calls_) { publish_content(tool_filter_.finish(is_tool_call_response)); }
+    // Discards each held-back tool region that was salvaged into structured calls; flushes the
+    // rest verbatim. reasoning_salvaged mirrors the content filter's is_tool_call_response for
+    // the reasoning channel.
+    std::size_t finish(bool is_tool_call_response, bool reasoning_salvaged) {
+        if (filter_tool_calls_) {
+            publish_content(tool_filter_.finish(is_tool_call_response));
+            publish_reasoning(reasoning_filter_.finish(!reasoning_salvaged));
+        }
         return content_bytes_;
     }
 
@@ -215,9 +237,15 @@ private:
         content_bytes_ += text.size();
     }
 
+    void publish_reasoning(const std::string& text) {
+        if (text.empty() || !sink_->on_reasoning) { return; }
+        sink_->on_reasoning(text);
+    }
+
     const StreamSink* sink_ = nullptr;
     bool filter_tool_calls_ = false;
     ToolCallStreamFilter tool_filter_;
+    ToolCallStreamFilter reasoning_filter_;
     std::size_t content_bytes_ = 0;
 };
 
@@ -403,15 +431,34 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
         std::move(result.speculative.accepted_per_position);
 
     bool is_tool_call_response = false;
+    bool reasoning_salvaged    = false;
     if (prepared.tool_capable) {
         ParsedToolCallOutput parsed =
             parse_qwen_tool_call_output(outcome.text, prepared.tool_name_max_length);
         outcome.text          = std::move(parsed.content);
         is_tool_call_response = parsed.is_tool_call_response;
-        if (is_tool_call_response) { outcome.tool_calls = std::move(parsed.tool_calls); }
+        if (is_tool_call_response) {
+            outcome.tool_calls = std::move(parsed.tool_calls);
+        } else {
+            // Salvage: with thinking on the model can skip think-close and emit its tool call
+            // while still in the reasoning channel (~10% of tool turns). The content parser
+            // never sees those, so without this the turn ends finish=stop with raw tool XML
+            // stranded in reasoning_content and no structured calls for clients to execute.
+            ParsedToolCallOutput leaked =
+                parse_qwen_tool_call_output(outcome.reasoning, prepared.tool_name_max_length);
+            if (leaked.is_tool_call_response) {
+                outcome.tool_calls      = std::move(leaked.tool_calls);
+                outcome.reasoning       = std::move(leaked.content);
+                is_tool_call_response   = true;
+                reasoning_salvaged      = true;
+                // Keep the message a clean tool response when the content channel was blank.
+                if (is_ascii_blank(outcome.text)) { outcome.text.clear(); }
+            }
+        }
     }
     if (output_sink) {
-        outcome.streamed_content_bytes = output_sink->finish(is_tool_call_response);
+        outcome.streamed_content_bytes =
+            output_sink->finish(is_tool_call_response, reasoning_salvaged);
     }
     return outcome;
 }

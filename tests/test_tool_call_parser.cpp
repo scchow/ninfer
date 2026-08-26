@@ -207,6 +207,97 @@ int test_all_blocks_bad_still_falls_back() {
     return failures;
 }
 
+// Reasoning-channel salvage: with thinking on, the model can skip think-close and emit its
+// tool call while still in the reasoning channel. GenerationService::run re-runs this parser
+// on outcome.reasoning when the content channel produced no tool response; these tests pin the
+// shapes that shape must handle (see docs/arch/gotchas/pitfalls.md, NInfer leak entry).
+int test_reasoning_leak_salvage_shape() {
+    // Realistic leak: thinking preamble, then a complete block at the reasoning tail.
+    const std::string reasoning = "Let me check what is in the directory first.\n"
+                                  "<tool_call>\n"
+                                  "<function=bash>\n"
+                                  "<parameter=command>\nls /tmp\n</parameter>\n"
+                                  "</function>\n"
+                                  "</tool_call>";
+    const ninfer::serve::ParsedToolCallOutput parsed =
+        ninfer::serve::parse_qwen_tool_call_output(reasoning, 64);
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response, "reasoning leak parses as tool response");
+    failures += check(parsed.tool_calls.size() == 1, "leaked call salvaged");
+    failures += check(parsed.tool_calls[0].name == "bash", "salvaged call name");
+    const Json args = Json::parse(parsed.tool_calls[0].arguments_json);
+    failures += check(args.at("command") == "ls /tmp", "salvaged call arguments");
+    failures += check(parsed.content == "Let me check what is in the directory first.",
+                      "real reasoning preamble kept, XML stripped");
+    return failures;
+}
+
+int test_reasoning_leak_multiple_blocks() {
+    // Two complete blocks at the reasoning tail: both must be salvaged.
+    const std::string reasoning = "I need two commands.\n"
+                                  "<tool_call>\n<function=a>\n<parameter=x>\n1\n</parameter>\n</function>\n</tool_call>\n"
+                                  "<tool_call>\n<function=b>\n<parameter=y>\ntwo\n</parameter>\n</function>\n</tool_call>";
+    const ninfer::serve::ParsedToolCallOutput parsed =
+        ninfer::serve::parse_qwen_tool_call_output(reasoning, 64);
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response, "multi-block reasoning leak is tool response");
+    failures += check(parsed.tool_calls.size() == 2, "both leaked calls salvaged");
+    failures += check(parsed.content == "I need two commands.", "preamble kept for multi-block");
+    return failures;
+}
+
+int test_reasoning_without_tool_xml_untouched() {
+    // No marker in reasoning: parser must be a no-op so healthy turns are untouched.
+    const std::string reasoning = "Plain thinking text with no tool markers.\n";
+    const ninfer::serve::ParsedToolCallOutput parsed =
+        ninfer::serve::parse_qwen_tool_call_output(reasoning, 64);
+    int failures = 0;
+    failures += check(!parsed.is_tool_call_response, "plain reasoning is not a tool response");
+    failures += check(parsed.content == reasoning, "plain reasoning preserved verbatim");
+    failures += check(parsed.tool_calls.empty(), "no calls from plain reasoning");
+    return failures;
+}
+
+int test_reasoning_truncated_block_no_salvage() {
+    // Generation cut mid-call in the reasoning channel: no complete block, so nothing is
+    // salvaged and the raw text stays as content (turn remains a normal stop).
+    const std::string reasoning = "Let me run it.\n<tool_call>\n<function=bash>\n<parameter=command>\nls";
+    const ninfer::serve::ParsedToolCallOutput parsed =
+        ninfer::serve::parse_qwen_tool_call_output(reasoning, 64);
+    int failures = 0;
+    failures += check(!parsed.is_tool_call_response, "truncated reasoning block not salvaged");
+    failures += check(parsed.content == reasoning, "truncated reasoning preserved verbatim");
+    return failures;
+}
+
+int test_reasoning_channel_filter_holdback() {
+    // Streaming hygiene: the same ToolCallStreamFilter guards the reasoning channel. While a
+    // trailing region could still be a tool call it must not be emitted; finish(true) drops it
+    // (salvaged into structured calls), finish(false) flushes it verbatim.
+    const std::string stream = "thinking out loud\n<tool_call>\n<function=bash>\n<parameter=command>\nls\n"
+                               "</parameter>\n</function>\n</tool_call>";
+    ninfer::serve::ToolCallStreamFilter salvaged;
+    std::string visible;
+    for (std::size_t i = 0; i < stream.size(); i += 7) {
+        visible += salvaged.feed(stream.substr(i, 7));
+    }
+    const std::string tail = salvaged.finish(true);
+    int failures = 0;
+    failures += check(visible == "thinking out loud",
+                      "reasoning filter held back trailing tool region");
+    failures += check(tail.empty(), "salvaged reasoning region dropped at finish");
+
+    ninfer::serve::ToolCallStreamFilter not_salvaged;
+    std::string restored;
+    for (std::size_t i = 0; i < stream.size(); i += 7) {
+        restored += not_salvaged.feed(stream.substr(i, 7));
+    }
+    restored += not_salvaged.finish(false);
+    failures += check(restored == stream,
+                      "non-salvaged reasoning region flushed verbatim at finish");
+    return failures;
+}
+
 } // namespace
 
 int main() {
@@ -221,6 +312,11 @@ int main() {
     failures += test_trailing_prose_keeps_calls();
     failures += test_prose_between_blocks_salvages_first();
     failures += test_all_blocks_bad_still_falls_back();
+    failures += test_reasoning_leak_salvage_shape();
+    failures += test_reasoning_leak_multiple_blocks();
+    failures += test_reasoning_without_tool_xml_untouched();
+    failures += test_reasoning_truncated_block_no_salvage();
+    failures += test_reasoning_channel_filter_holdback();
     if (failures == 0) { std::cout << "ok\n"; }
     return failures == 0 ? 0 : 1;
 }
