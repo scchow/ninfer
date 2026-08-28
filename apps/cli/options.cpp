@@ -64,11 +64,24 @@ KvCapacityPolicy parse_kv_capacity(const char* text) {
     return KvCapacityPolicy::explicit_capacity(parse_u32(text, "kv-capacity"));
 }
 
-ReasoningEffort parse_reasoning_effort(std::string_view text) {
+ReasoningEffort parse_reasoning_effort(std::string_view text, bool& force_disable_thinking) {
     if (text == "low") { return ReasoningEffort::Low; }
     if (text == "medium") { return ReasoningEffort::Medium; }
     if (text == "xhigh") { return ReasoningEffort::XHigh; }
+    if (text == "none") {
+        // CLI sugar: --reasoning-effort none is equivalent to --no-thinking.
+        // Mirrors the serve layer (translate.cpp) where 'none' -> enable_thinking=false.
+        force_disable_thinking = true;
+        return ReasoningEffort::Medium;
+    }
     throw std::invalid_argument("invalid reasoning-effort: " + std::string(text));
+}
+
+ChatStyle parse_chat_style(std::string_view text) {
+    if (text == "default") { return ChatStyle::Default; }
+    if (text == "sharp-v22.1") { return ChatStyle::SharpV22_1; }
+    throw std::invalid_argument(
+        "invalid chat-style: " + std::string(text) + " (expected default or sharp-v22.1)");
 }
 
 } // namespace
@@ -85,6 +98,7 @@ std::string usage_text(const char* argv0) {
            "       [--stop-token-id N]... [--stop <text>]... [--reasoning-stop <text>]...\n"
            "       [--raw-output] [--print-token-ids] [--no-thinking] [--thinking-budget N]\n"
            "       [--reasoning-effort low|medium|xhigh] [--vision]\n"
+           "       [--chat-style default|sharp-v22.1]\n"
            "       [--no-cuda-graph]\n"
            "\n"
            "Streams answer content to stdout and reasoning plus diagnostics to stderr.\n"
@@ -95,7 +109,7 @@ std::string usage_text(const char* argv0) {
            "toward --max-new.\n"
            "--kv-capacity auto leaves " +
            std::to_string(kDefaultKvCapacityHeadroomBytes / (1024ULL * 1024ULL)) +
-           " MiB of sizing headroom.\n"
+           " MiB of sizing headroom (bounded by max-context).\n"
            "Sampling defaults come from the loaded model and thinking mode; flags override "
            "individual fields.\n";
 }
@@ -149,7 +163,14 @@ Options parse_options(int argc, char** argv) {
         } else if (arg == "--thinking-budget") {
             options.thinking_budget = parse_u32(value(arg), "thinking-budget");
         } else if (arg == "--reasoning-effort") {
-            options.reasoning_effort = parse_reasoning_effort(value(arg));
+            bool force_no_thinking = false;
+            options.reasoning_effort = parse_reasoning_effort(value(arg), force_no_thinking);
+            if (force_no_thinking) {
+                options.enable_thinking = false;
+                options.reasoning_effort = std::nullopt;  // 'none' == --no-thinking, no effort
+            }
+        } else if (arg == "--chat-style") {
+            options.chat_style = parse_chat_style(value(arg));
         } else if (arg == "--vision") {
             options.enable_vision = true;
         } else if (arg == "--no-cuda-graph") {

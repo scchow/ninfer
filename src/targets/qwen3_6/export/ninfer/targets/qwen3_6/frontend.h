@@ -21,6 +21,7 @@ struct FrontendOptions {
     std::size_t media_live_bytes                = kDefaultMediaLiveBytes;
     std::uint32_t media_preprocess_threads      = 0;
     std::uint32_t max_cache_markers_per_request = 4;
+    ChatStyle chat_style                        = ChatStyle::Default;
 };
 
 struct FrontendResources;

@@ -101,6 +101,11 @@ struct ContextCostOptions {
     std::filesystem::path preset_path;
 };
 
+enum class ChatStyle : std::uint8_t {
+    Default,
+    SharpV22_1,
+};
+
 struct EngineOptions {
     std::filesystem::path artifact_path;
     int device                         = 0;
@@ -121,6 +126,7 @@ struct EngineOptions {
     ContextCacheOptions context_cache;
     ContextCostOptions context_cost;
     LoadProgress load_progress;
+    ChatStyle chat_style                   = ChatStyle::Default;
 };
 
 enum class SamplingMode : std::uint8_t {
@@ -262,14 +268,19 @@ struct ChatMessage {
 };
 
 enum class ReasoningEffort : std::uint8_t {
+    None,
+    Minimal,
     Low,
     Medium,
+    High,
     XHigh,
+    Max,
 };
 
 struct ReasoningEffortCapabilities {
     bool low    = false;
     bool medium = false;
+    bool high   = false;
     bool xhigh  = false;
     std::optional<ReasoningEffort> default_effort;
 
@@ -296,6 +307,7 @@ struct PromptOptions {
     bool enable_thinking       = true;
     std::optional<ReasoningEffort> reasoning_effort;
     bool preserve_thinking = false;
+    ChatStyle chat_style = ChatStyle::Default;
     bool add_vision_id     = false;
     std::vector<std::string> tool_jsons;
 };

@@ -589,6 +589,27 @@ int test_response_serialization() {
     failures += check(j.at("usage").at("prompt_tokens") == 10, "usage prompt_tokens");
     failures += check(j.at("usage").at("completion_tokens") == 3, "usage completion_tokens");
     failures += check(j.at("usage").at("total_tokens") == 13, "usage total_tokens");
+    failures += check(!j.contains("metrics"), "no metrics key when omitted");
+    failures += check(!j.at("usage").contains("prompt_tokens_details"),
+                      "no prompt_tokens_details when cache unused");
+
+    // Cached prompt tokens surface as usage.prompt_tokens_details.cached_tokens
+    // (vLLM convention) so routers rate only the uncached tail against TTFT.
+    const CompletionUsage cached_usage{usage.prompt_tokens, usage.completion_tokens, 4096};
+    const Json jc = Json::parse(make_chat_completion_response("id-4", "m", 112, "hello",
+                                                              "", "stop", cached_usage));
+    failures += check(
+        jc.at("usage").at("prompt_tokens_details").at("cached_tokens") == 4096,
+        "usage prompt_tokens_details.cached_tokens");
+    failures += check(jc.at("usage").at("prompt_tokens") == usage.prompt_tokens,
+                      "cached usage keeps full prompt_tokens");
+
+    // Optional metrics object (vLLM convention) is attached when provided.
+    const CompletionMetrics response_metrics{120.5, 8.25};
+    const Json jm = Json::parse(make_chat_completion_response("id-3", "m", 111, "hello",
+                                                              "", "stop", usage, response_metrics));
+    failures += check(jm.at("metrics").at("time_to_first_token_ms") == 120.5, "metrics ttft");
+    failures += check(jm.at("metrics").at("mean_itl_ms") == 8.25, "metrics itl");
 
     // Non-empty reasoning is attached as message.reasoning_content, content stays answer-only.
     const Json jr = Json::parse(make_chat_completion_response("id-2", "m", 111, "the answer",
@@ -624,11 +645,14 @@ int test_tool_response_serialization() {
                       "tool function arguments");
     failures += check(j.at("usage").at("total_tokens") == 18, "tool usage total");
 
+    const CompletionMetrics tool_metrics{150.0, 8.25};
     const Json with_content = Json::parse(make_chat_completion_tool_response(
-        "id-tool-2", "m", 223, "Calling weather.", "", calls, usage));
+        "id-tool-2", "m", 223, "Calling weather.", "", calls, usage, tool_metrics));
     failures +=
         check(with_content.at("choices").at(0).at("message").at("content") == "Calling weather.",
               "tool content prefix carried");
+    failures +=
+        check(with_content.at("metrics").at("mean_itl_ms") == 8.25, "tool response metrics itl");
     return failures;
 }
 
@@ -669,6 +693,16 @@ int test_chunk_serialization() {
 
     const Json final_no_usage = parse_sse(make_chat_chunk_final("id", "m", 1, "stop", false));
     failures += check(!final_no_usage.contains("usage"), "no usage key when include_usage=false");
+    failures += check(!final_chunk.contains("metrics"), "no metrics key on final chunk when omitted");
+
+    // Final chunk carries the optional metrics object when provided.
+    const CompletionMetrics chunk_metrics{100.0, 9.0};
+    const Json final_metrics =
+        parse_sse(make_chat_chunk_final("id", "m", 1, "stop", true, chunk_metrics));
+    failures += check(final_metrics.at("metrics").at("time_to_first_token_ms") == 100.0,
+                      "final chunk metrics ttft");
+    failures +=
+        check(final_metrics.at("metrics").at("mean_itl_ms") == 9.0, "final chunk metrics itl");
 
     // Dedicated usage chunk: empty choices, populated usage.
     const CompletionUsage usage{2, 5};
@@ -678,6 +712,14 @@ int test_chunk_serialization() {
     failures +=
         check(usage_chunk.at("usage").at("prompt_tokens") == 2, "usage chunk prompt_tokens");
     failures += check(usage_chunk.at("usage").at("total_tokens") == 7, "usage chunk total");
+    failures += check(!usage_chunk.at("usage").contains("prompt_tokens_details"),
+                      "usage chunk omits details when cache unused");
+    const CompletionUsage cached_chunk_usage{2, 5, 1};
+    const Json cached_usage_chunk =
+        parse_sse(make_chat_chunk_usage("id", "m", 1, cached_chunk_usage));
+    failures += check(
+        cached_usage_chunk.at("usage").at("prompt_tokens_details").at("cached_tokens") == 1,
+        "usage chunk prompt_tokens_details.cached_tokens");
 
     failures += check(sse_done() == "data: [DONE]\n\n", "done sentinel");
     return failures;

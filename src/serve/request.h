@@ -49,8 +49,20 @@ struct RequestLimits {
 };
 
 struct CompletionUsage {
-    int prompt_tokens     = 0;
-    int completion_tokens = 0;
+    int prompt_tokens      = 0;
+    int completion_tokens  = 0;
+    // Prompt tokens reused from the prefix cache (not recomputed). Emitted as
+    // OpenAI `usage.prompt_tokens_details.cached_tokens` so routers divide
+    // only the uncached tail, not the full prompt, by TTFT.
+    int cached_prompt_tokens = 0;
+};
+
+// Per-request generation timing in milliseconds, emitted as the OpenAI `metrics`
+// object (the vLLM convention) so routers such as llama-swap can derive prompt
+// and generation token rates. Omitted from the response when null.
+struct CompletionMetrics {
+    double time_to_first_token_ms = 0.0;
+    double mean_itl_ms            = 0.0;
 };
 
 enum class ContentKind {

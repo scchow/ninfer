@@ -222,9 +222,10 @@ void validate_tokenizer_config(const FrontendResources& resources) {
     }
 }
 
-fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources) {
+fi::CompiledChatTemplate compile_chat_template(const FrontendResources& resources,
+                                            ChatStyle chat_style) {
     validate_tokenizer_config(resources);
-    return fi::CompiledChatTemplate::resolve(resources.chat_template_jinja);
+    return fi::CompiledChatTemplate::resolve(resources.chat_template_jinja, chat_style);
 }
 
 [[noreturn]] void throw_processor_error(const fi::ProcessorError& error) {
@@ -308,6 +309,7 @@ fi::ChatRenderOptions render_options(const PromptOptions& options,
                                    .reasoning_effort      = options.reasoning_effort,
                                    .preserve_thinking     = options.preserve_thinking,
                                    .add_vision_id         = options.add_vision_id,
+                                   .chat_style            = options.chat_style,
                                    .tool_jsons            = options.tool_jsons};
     rendered.cache_markers.assign(cache_markers.begin(), cache_markers.end());
     return rendered;
@@ -573,7 +575,28 @@ void feed_decoded_text(DecoderState& state, std::string_view text, const StopPol
                        PublishedOutput& emitted, std::uint32_t committed_tokens,
                        StopMatch* best_match) {
     if (!state.in_reasoning) {
-        feed_content(state, std::string(text), policy, emitted, committed_tokens, best_match);
+        // With preserve_special_tokens enabled (tool-capable requests), a model-emitted
+        // think-close token decodes to literal text. Once reasoning has closed - or never
+        // opened (thinking disabled) - that tag can never be meaningful content, so drop
+        // it instead of leaking the raw marker into client-visible text. The first close
+        // while reasoning is still open is handled above; this guards every subsequent one.
+        std::string cleaned;
+        cleaned.reserve(text.size());
+        std::size_t begin = 0;
+        for (;;) {
+            const std::size_t hit = text.find(kThinkClose, begin);
+            if (hit == std::string_view::npos) {
+                cleaned.append(text.substr(begin));
+                break;
+            }
+            cleaned.append(text.substr(begin, hit - begin));
+            begin = hit + kThinkClose.size();
+        }
+        if (!cleaned.empty()) {
+            state.strip_content_leading = false;
+            feed_channel(state, OutputChannel::Content, cleaned, policy, emitted,
+                         committed_tokens, best_match);
+        }
         return;
     }
 
@@ -790,7 +813,7 @@ prepare_context_cache(ContextCacheHints hints, std::size_t message_count,
 class Frontend::Impl {
 public:
     Impl(const FrontendResources& resources, bool registered_checkpoint, FrontendOptions options)
-        : chat_template(compile_chat_template(resources)),
+        : chat_template(compile_chat_template(resources, options.chat_style)),
           tokenizer(std::make_shared<const fi::Tokenizer>(
               fi::TokenizerResources{.tokenizer_json         = resources.tokenizer_json,
                                      .tokenizer_config_json  = resources.tokenizer_config_json,

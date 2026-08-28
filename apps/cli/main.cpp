@@ -259,6 +259,7 @@ int main(int argc, char** argv) {
                 : ninfer::product::prompt_from_messages(cli.messages_path, cli.enable_thinking,
                                                         cli.enable_vision);
         input.options.reasoning_effort = cli.reasoning_effort;
+        input.options.chat_style        = cli.chat_style;
 
         ninfer::RequestOptions request;
         request.execution.sampling                = cli.sampling;
@@ -287,6 +288,7 @@ int main(int argc, char** argv) {
         engine_options.context_cache.host_state_slots       = 0;
         engine_options.context_cache.host_kv_capacity_bytes = 0;
         engine_options.load_progress                        = load_progress.callback();
+        engine_options.chat_style                           = cli.chat_style;
 
         const auto load_started = Clock::now();
         ninfer::Engine engine(std::move(engine_options));
