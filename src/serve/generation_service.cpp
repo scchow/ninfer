@@ -478,8 +478,8 @@ GenerationOutcome GenerationService::run(PreparedRequest& prepared, const Stream
             // while still in the reasoning channel (~10% of tool turns). The content parser
             // never sees those, so without this the turn ends finish=stop with raw tool XML
             // stranded in reasoning_content and no structured calls for clients to execute.
-            ParsedToolCallOutput leaked =
-                parse_qwen_tool_call_output(outcome.reasoning, prepared.tool_name_max_length);
+            ParsedToolCallOutput leaked = parse_qwen_tool_call_output(
+                outcome.reasoning, prepared.tool_name_max_length, prepared.tool_argument_types);
             if (leaked.is_tool_call_response) {
                 outcome.tool_calls      = std::move(leaked.tool_calls);
                 outcome.reasoning       = std::move(leaked.content);
