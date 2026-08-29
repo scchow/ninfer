@@ -386,9 +386,19 @@ ToolCallOutputDecoder::Terminal ToolCallOutputDecoder::finish() {
         marker_prefix_bytes_ = 0;
         return Terminal{.content = {}, .tool_calls = std::move(parsed.tool_calls)};
     }
-    // Not salvaged: return the parser's cleaned view of the held region instead of the raw
-    // bytes. Prose is preserved; malformed or unclosed blocks are dropped, so their XML is
-    // never flushed into the client-visible channel.
+    if (!saw_tool_marker_) {
+        // No complete tool-call marker was ever held: the retained bytes are at most
+        // trailing whitespace or a partial marker prefix - legitimate prose. Restore
+        // them verbatim.
+        std::string tail = std::move(trailing_whitespace_);
+        constexpr std::string_view kToolOpenTag = "<tool_call>";
+        tail.append(kToolOpenTag.substr(0, marker_prefix_bytes_));
+        marker_prefix_bytes_ = 0;
+        return Terminal{.content = std::move(tail), .tool_calls = {}};
+    }
+    // A complete marker was held but did not parse as a call: return the cleaned view
+    // from the parser (prose preserved, malformed or unclosed blocks dropped) instead
+    // of the raw XML.
     marker_prefix_bytes_ = 0;
     tool_region_.clear();
     return Terminal{.content = std::move(parsed.content), .tool_calls = {}};
