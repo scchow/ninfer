@@ -253,7 +253,10 @@ public:
                                      : std::move(delta.text);
             if (!visible.empty() && sink_->on_reasoning) { sink_->on_reasoning(visible); }
         } else {
-            if (sink_->on_content) { sink_->on_content(delta.text); }
+            if (sink_->on_content) {
+                saw_content_ = true;
+                sink_->on_content(delta.text);
+            }
         }
     }
 
@@ -266,11 +269,17 @@ public:
     }
 
     void flush_reasoning(std::string text) {
-        if (!text.empty() && sink_->on_reasoning) { sink_->on_reasoning(std::move(text)); }
+        // Once content has streamed, late reasoning cannot be delivered: the chat and
+        // Anthropic stream shapes are reasoning-then-content only. The bytes remain in
+        // GenerationOutcome.reasoning for non-stream consumers; dropping them loses at most
+        // trailing whitespace or a partial tool-call marker from the salvage holdback.
+        if (saw_content_ || text.empty() || !sink_->on_reasoning) { return; }
+        sink_->on_reasoning(std::move(text));
     }
 
 private:
-    const StreamSink* sink_ = nullptr;
+    const StreamSink* sink_  = nullptr;
+    bool saw_content_        = false;
     // Non-null only when the request has tools; the engine's tool decoder watches the
     // content channel, so the reasoning channel needs its own.
     std::optional<fi::ToolCallOutputDecoder> reasoning_tool_filter_;

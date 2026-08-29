@@ -651,6 +651,26 @@ int test_stream_response() {
     failures += check(throws_logic([&] { (void)mismatch.finish(outcome); }),
                       "stream encoder rejects terminal/content divergence");
 
+    // The salvage holdback can flush trailing reasoning only after content has streamed.
+    // The chat stream shape is reasoning-then-content, so late reasoning is dropped (it
+    // stays in GenerationOutcome.reasoning) instead of failing the whole stream.
+    OpenAIChatStream late(identity(), false);
+    (void)late.start();
+    (void)late.reasoning_delta("thought");
+    (void)late.content_delta("ans");
+    failures += check(late.reasoning_delta(" \n").empty(),
+                      "reasoning delta after content is dropped, not emitted");
+    GenerationOutcome late_outcome = sample_outcome();
+    late_outcome.reasoning        = "thought \n";
+    const std::vector<std::string> late_events = late.finish(late_outcome);
+    failures += check(late_events.size() == 3 && late_events.back() == "data: [DONE]\n\n",
+                      "finish after dropped late reasoning emits suffix, terminal, and done");
+    bool late_reasoning_leaked = false;
+    for (const std::string& event : late_events) {
+        if (event.find("reasoning_content") != std::string::npos) { late_reasoning_leaked = true; }
+    }
+    failures += check(!late_reasoning_leaked, "unstreamed reasoning tail is not re-emitted");
+
     OpenAIChatStream tool_stream(identity(), false);
     (void)tool_stream.start();
     GenerationOutcome tool_outcome;

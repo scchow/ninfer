@@ -183,8 +183,16 @@ std::string OpenAIChatStream::start() {
 }
 
 std::string OpenAIChatStream::reasoning_delta(const std::string& text) {
-    if (!started_ || finished_ || content_started_) {
+    if (!started_ || finished_) {
         throw std::logic_error("invalid OpenAI Chat reasoning delta state");
+    }
+    if (content_started_ || text.empty()) {
+        // The chat stream shape is reasoning-then-content only, so reasoning that arrives
+        // after content cannot be delivered. Drop it: the bytes stay in
+        // GenerationOutcome.reasoning and finish() tolerates the unstreamed tail. In
+        // practice this is at most trailing whitespace or a partial tool-call marker held
+        // back by the salvage filter.
+        return {};
     }
     reasoning_ += text;
     return chunk(identity_, Json{{"reasoning_content", text}}, nullptr, include_usage_);
@@ -208,11 +216,11 @@ std::vector<std::string> OpenAIChatStream::finish(const GenerationOutcome& outco
     require_prefix(outcome.text, content_, "content");
 
     std::vector<std::string> events;
+    // A terminal reasoning suffix is only deliverable before content starts; otherwise it is
+    // dropped (it remains in outcome.reasoning). This is the salvage holdback's trailing
+    // whitespace / partial marker on reasoning-then-content turns.
     const std::string reasoning_suffix = outcome.reasoning.substr(reasoning_.size());
-    if (!reasoning_suffix.empty()) {
-        if (content_started_) {
-            throw std::logic_error("terminal reasoning appeared after streamed content");
-        }
+    if (!reasoning_suffix.empty() && !content_started_) {
         events.push_back(chunk(identity_, Json{{"reasoning_content", reasoning_suffix}}, nullptr,
                                include_usage_));
     }
