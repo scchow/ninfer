@@ -87,7 +87,8 @@ int test_malformed_falls_back_to_text() {
         fi::parse_qwen_tool_call_output(text, 64, kNoTypeContracts);
     int failures = 0;
     failures += check(!parsed.is_tool_call_response, "malformed xml is not tool response");
-    failures += check(parsed.content == text, "malformed xml preserved as text");
+    failures += check(parsed.content.find("<tool_call>") == std::string::npos,
+                      "malformed xml leaked into content");
     failures += check(parsed.tool_calls.empty(), "malformed xml has no calls");
     return failures;
 }
@@ -387,14 +388,51 @@ int test_prose_between_blocks_salvages_first() {
     return failures;
 }
 
-int test_all_blocks_bad_still_falls_back() {
-    // A single un-closable block must still produce the raw-text fallback (no silent drop).
+int test_all_blocks_bad_drops_xml() {
+    // A single un-closable block is dropped; its raw XML must never leak into content.
     const std::string text = "prefix\n<tool_call>\n<function=broken>\n<parameter=x>1";
     const fi::ParsedToolCallOutput parsed =
         fi::parse_qwen_tool_call_output(text, 64, kNoTypeContracts);
     int failures = 0;
-    failures += check(!parsed.is_tool_call_response, "all-bad blocks fall back to text");
-    failures += check(parsed.content == text, "fallback preserves full text");
+    failures += check(!parsed.is_tool_call_response, "all-bad blocks are not tool calls");
+    failures += check(parsed.tool_calls.empty(), "all-bad blocks yield no calls");
+    failures += check(parsed.content.find("<tool_call>") == std::string::npos,
+                      "malformed block XML leaked into content");
+    failures += check(parsed.content.find("prefix") != std::string::npos,
+                      "prose before blocks was lost");
+    return failures;
+}
+
+int test_malformed_block_dropped_good_neighbors_survive() {
+    const std::string good =
+        "<tool_call>\n<function=bash>\n<parameter=cmd>\nls\n</parameter>\n</function>\n</tool_call>";
+    const std::string bad_tail =
+        "<tool_call>\n<function=bash>\n<parameter=cmd>\nls\n</parameter>\n";
+    const std::string text = good + "\n" + bad_tail + "\nsome prose";
+    const fi::ParsedToolCallOutput parsed =
+        fi::parse_qwen_tool_call_output(text, 64, kNoTypeContracts);
+    int failures = 0;
+    failures += check(parsed.is_tool_call_response && parsed.tool_calls.size() == 1,
+                      "good block before malformed one was not salvaged");
+    failures += check(parsed.content.find("<tool_call>") == std::string::npos &&
+                          parsed.content.find("</function>") == std::string::npos,
+                      "malformed block XML leaked into content");
+    return failures;
+}
+
+int test_malformed_param_block_dropped() {
+    const std::string text =
+        "note\n<tool_call>\n<function=bash>\n<parameter cmd>\nls\n</parameter>"
+        "\n</function>\n</tool_call>";
+    const fi::ParsedToolCallOutput parsed =
+        fi::parse_qwen_tool_call_output(text, 64, kNoTypeContracts);
+    int failures = 0;
+    failures += check(!parsed.is_tool_call_response && parsed.tool_calls.empty(),
+                      "single malformed-param block should not parse");
+    failures += check(parsed.content.find("<tool_call>") == std::string::npos,
+                      "malformed-param block XML leaked into content");
+    failures += check(parsed.content.find("note") != std::string::npos,
+                      "prose before the block was lost");
     return failures;
 }
 
@@ -457,7 +495,8 @@ int test_reasoning_truncated_block_no_salvage() {
         fi::parse_qwen_tool_call_output(reasoning, 64, kNoTypeContracts);
     int failures = 0;
     failures += check(!parsed.is_tool_call_response, "truncated reasoning block not salvaged");
-    failures += check(parsed.content == reasoning, "truncated reasoning preserved verbatim");
+    failures += check(parsed.content == "Let me run it.",
+                      "prose kept, truncated block XML dropped");
     return failures;
 }
 
@@ -482,7 +521,8 @@ int test_reasoning_channel_filter_holdback() {
               "salvaged reasoning region produced a structured call");
 
     // A trailing region that is not a complete well-formed tool call (generation cut
-    // mid-call) is restored verbatim so the turn stays a normal stop.
+    // mid-call) no longer restores the raw fragment: unparseable blocks are dropped so
+    // their XML never reaches the client. Only marker-free prose would be flushed back.
     const std::string truncated =
         "thinking out loud\n<tool_call>\n<function=bash>\n<parameter=command>\nls";
     fi::ToolCallOutputDecoder not_salvaged(std::make_shared<fi::ToolCallOutputContract>(), 64);
@@ -491,8 +531,8 @@ int test_reasoning_channel_filter_holdback() {
         restored += not_salvaged.feed(truncated.substr(i, 7));
     }
     restored += not_salvaged.finish().content;
-    failures += check(restored == truncated,
-                      "non-salvaged reasoning region flushed verbatim at finish");
+    failures += check(restored == "thinking out loud",
+                      "truncated tool fragment dropped at finish instead of echoed");
     return failures;
 }
 
@@ -512,9 +552,11 @@ int main() {
     failures += test_parser_enforces_active_tool_set();
     failures += test_incremental_filter_valid_tool();
     failures += test_incremental_filter_fallback();
+    failures += test_malformed_block_dropped_good_neighbors_survive();
+    failures += test_malformed_param_block_dropped();
     failures += test_trailing_prose_keeps_calls();
     failures += test_prose_between_blocks_salvages_first();
-    failures += test_all_blocks_bad_still_falls_back();
+    failures += test_all_blocks_bad_drops_xml();
     failures += test_reasoning_leak_salvage_shape();
     failures += test_reasoning_leak_multiple_blocks();
     failures += test_reasoning_without_tool_xml_untouched();
