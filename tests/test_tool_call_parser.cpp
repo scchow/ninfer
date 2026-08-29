@@ -259,9 +259,9 @@ int test_declared_type_mismatches_are_forwarded_without_coercion() {
         "<tool_call>\n<function=configure>\n<parameter=python_boolean>\nTrue\n</parameter>\n"
         "</function>\n</tool_call>";
     const auto rejected = fi::parse_qwen_tool_call_output(invalid, 64, contracts);
-    failures += check(!rejected.is_tool_call_response && rejected.content == invalid &&
-                          rejected.tool_calls.empty(),
-                      "non-JSON value for a declared non-string parameter did not fall back");
+    failures += check(!rejected.is_tool_call_response && rejected.tool_calls.empty() &&
+                          rejected.content.find("<tool_call>") == std::string::npos,
+                      "non-JSON value dropped with its block, not echoed");
     return failures;
 }
 
@@ -295,8 +295,8 @@ int test_parser_enforces_active_tool_set() {
     int failures = 0;
     failures += check(!parsed.is_tool_call_response && parsed.tool_calls.empty(),
                       "undeclared tool escaped the active tool-name set");
-    failures += check(parsed.content.find("<function=other>") != std::string::npos,
-                      "undeclared tool was not preserved as ordinary content");
+    failures += check(parsed.content.find("<function=other>") == std::string::npos,
+                      "undeclared tool block was not dropped with its XML");
     return failures;
 }
 
@@ -338,7 +338,8 @@ int test_incremental_filter_fallback() {
     partial_restored += partial.finish().content;
 
     int failures = 0;
-    failures += check(restored == original, "malformed tool filter fallback lost raw bytes");
+    failures += check(restored == "prefix",
+                      "malformed tool fragment dropped at finish instead of echoed");
     failures +=
         check(ordinary == "ordinary text  ", "ordinary filtered output lost trailing whitespace");
     failures += check(partial_restored == partial_original,

@@ -386,14 +386,12 @@ ToolCallOutputDecoder::Terminal ToolCallOutputDecoder::finish() {
         marker_prefix_bytes_ = 0;
         return Terminal{.content = {}, .tool_calls = std::move(parsed.tool_calls)};
     }
-
-    constexpr std::string_view kToolOpen = "<tool_call>";
-    std::string tail                     = std::move(trailing_whitespace_);
-    tail.append(kToolOpen.substr(0, marker_prefix_bytes_));
+    // Not salvaged: return the parser's cleaned view of the held region instead of the raw
+    // bytes. Prose is preserved; malformed or unclosed blocks are dropped, so their XML is
+    // never flushed into the client-visible channel.
     marker_prefix_bytes_ = 0;
-    tail += tool_region_;
     tool_region_.clear();
-    return Terminal{.content = std::move(tail), .tool_calls = {}};
+    return Terminal{.content = std::move(parsed.content), .tool_calls = {}};
 }
 
 } // namespace ninfer::targets::qwen3_6::frontend_internal
