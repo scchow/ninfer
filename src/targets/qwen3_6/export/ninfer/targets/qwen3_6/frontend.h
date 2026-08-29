@@ -16,13 +16,12 @@ namespace ninfer::targets::qwen3_6 {
 inline constexpr std::size_t kTokenDomain = 248077;
 
 struct FrontendOptions {
-    bool vision_enabled                         = true;
-    std::uint32_t max_context                   = 2'048;
-    std::size_t media_cache_bytes               = kDefaultMediaCacheBytes;
-    std::size_t media_live_bytes                = kDefaultMediaLiveBytes;
-    std::uint32_t media_preprocess_threads      = 0;
-    std::uint32_t max_cache_markers_per_request = 4;
-    ChatStyle chat_style                        = ChatStyle::Default;
+    bool vision_enabled                = true;
+    std::uint32_t max_context          = 2'048;
+    std::size_t media_cache_bytes      = kDefaultMediaCacheBytes;
+    std::size_t media_live_bytes       = kDefaultMediaLiveBytes;
+    std::uint32_t media_preprocess_threads = 0;
+    ChatStyle chat_style               = ChatStyle::Default;
 };
 
 struct FrontendResources;
