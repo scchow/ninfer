@@ -1,13 +1,12 @@
 #pragma once
 
-// Product-side adapter between HTTP protocol requests and the public NInfer
-// engine. It owns one Engine and keeps protocol concerns (aliases, usage,
-// streaming callbacks, and tool-call parsing) outside the target package.
+// Product-side adapter from one protocol-neutral generation request to the public Engine. Wire
+// adapters normalize before this layer and render IDs, usage, and response events after it.
 
 #include "ninfer/engine.h"
 #include "serve/request.h"
 #include "serve/serve_options.h"
-#include "serve/tool_call_parser.h"
+#include "targets/qwen3_6/impl/frontend/tool_call_parser.h"
 
 #include <chrono>
 #include <cstddef>
@@ -47,20 +46,26 @@ struct GenerationMetrics {
 struct GenerationOutcome {
     std::string text;
     std::string reasoning;
-    std::vector<ToolCall> tool_calls;
+    std::vector<ninfer::GeneratedToolCall> tool_calls;
     int prompt_tokens     = 0;
     int completion_tokens = 0;
     int reasoning_tokens  = 0;
     ninfer::ThinkingBudgetStats thinking;
-    std::size_t streamed_content_bytes = 0;
     ninfer::FinishReason finish_reason = ninfer::FinishReason::OutputLimit;
+    std::optional<std::string> matched_stop_string;
     GenerationMetrics metrics;
 };
 
 struct StreamSink {
+    std::function<void(const ninfer::GenerationStart& start)> on_start;
     std::function<void(const std::string& delta_text)> on_content;
     std::function<void(const std::string& delta_text)> on_reasoning;
     std::function<bool()> is_cancelled;
+};
+
+enum class GenerationConsumerMode : std::uint8_t {
+    Aggregate,
+    Streaming,
 };
 
 // Translate Engine request failures into the shared protocol-neutral HTTP error contract.
@@ -75,16 +80,17 @@ struct PreparedRequest {
     double prepare_seconds     = 0.0;
     double acquisition_seconds = 0.0;
     PromptPreparationStats preparation;
-    int prompt_tokens                = 0;
-    bool include_usage               = false;
-    bool tool_capable                = false;
-    std::size_t tool_name_max_length = 64;
-    ToolArgumentTypeContracts tool_argument_types;
-
+    int prompt_tokens    = 0;
     bool enable_thinking = true;
+    // Qwen tool-call salvage: when the model skips think-close it can emit its tool call while
+    // still in the reasoning channel. The serve layer filters that channel with a decoder built
+    // from the same tool definitions the frontend received; null when the request has no tools.
+    std::shared_ptr<const ninfer::targets::qwen3_6::frontend_internal::ToolCallOutputContract>
+        tool_output_contract;
+    std::size_t tool_name_max_length = 64;
     std::optional<std::uint32_t> thinking_budget;
-    bool preserve_thinking                 = false;
-    bool preserve_thinking_semantic_change = false;
+    std::optional<ninfer::ReasoningEffort> effective_reasoning_effort;
+    bool preserve_thinking = false;
     std::shared_ptr<RequestLifetime> lifetime;
 };
 
@@ -113,6 +119,7 @@ public:
     }
 
     [[nodiscard]] PreparedRequest prepare(const GenerationRequest& req,
+                                          GenerationConsumerMode consumer_mode,
                                           std::function<bool()> is_cancelled = {},
                                           ContextCacheHints context_cache    = {}) const;
     [[nodiscard]] int count_prompt_tokens(const GenerationRequest& req,
@@ -135,11 +142,10 @@ private:
         UnboundedStartup,
     };
 
-    [[nodiscard]] PreparedRequest prepare_impl(const GenerationRequest& req,
-                                               std::function<bool()> is_cancelled,
-                                               ContextCacheHints context_cache,
-                                               CacheParticipation cache_participation,
-                                               DeadlinePolicy deadline_policy) const;
+    [[nodiscard]] PreparedRequest
+    prepare_impl(const GenerationRequest& req, GenerationConsumerMode consumer_mode,
+                 std::function<bool()> is_cancelled, ContextCacheHints context_cache,
+                 CacheParticipation cache_participation, DeadlinePolicy deadline_policy) const;
     [[nodiscard]] std::shared_ptr<RequestLifetime>
     acquire_request_lifetime(DeadlinePolicy deadline_policy) const;
 
